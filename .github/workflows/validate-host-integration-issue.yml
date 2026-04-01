@@ -1,0 +1,97 @@
+name: Validate host integration issue
+
+on:
+  issues:
+    types: [opened, edited, labeled]
+
+jobs:
+  validate:
+    if: contains(github.event.issue.labels.*.name, 'host-integration')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check required fields exist in issue body
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = context.payload.issue.body || "";
+
+            function escapeRegExp(str) {
+              return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+            }
+
+            function getSectionValue(markdown, title) {
+              const headingRegex = new RegExp("^###\\s+" + escapeRegExp(title) + "\\s*$", "mi");
+              const headingMatch = markdown.match(headingRegex);
+              if (!headingMatch) {
+                return null;
+              }
+
+              const headingStart = markdown.indexOf(headingMatch[0]);
+              if (headingStart === -1) {
+                return null;
+              }
+
+              const contentStart = headingStart + headingMatch[0].length;
+              const rest = markdown.slice(contentStart);
+              const nextHeadingMatch = rest.match(/^###\s+/m);
+              const sectionText = nextHeadingMatch ? rest.slice(0, nextHeadingMatch.index) : rest;
+
+              return sectionText.trim();
+            }
+
+            const requiredTitles = [
+              "Host product",
+              "Host product version",
+              "Dynamo version"
+            ];
+
+            const missingHeadings = [];
+            const emptySections = [];
+
+            let hostProductValue = null;
+
+            for (const title of requiredTitles) {
+              const value = getSectionValue(body, title);
+              if (value === null) {
+                missingHeadings.push(title);
+                continue;
+              }
+
+              const normalized = value.trim();
+              const isNoResponse = /^_No response_$/i.test(normalized);
+
+              if (!normalized || isNoResponse) {
+                emptySections.push(title);
+              }
+
+              if (title === "Host product") {
+                hostProductValue = normalized;
+              }
+            }
+
+            // If Host product is "Other", require a non-empty "Other product name" section.
+            if (hostProductValue) {
+              const firstLine = hostProductValue.split(/\r?\n/, 1)[0].trim();
+              if (/^other\b/i.test(firstLine)) {
+                const otherNameValue = getSectionValue(body, "Other product name");
+                const normalizedOther = (otherNameValue || "").trim();
+                const isNoResponseOther = /^_No response_$/i.test(normalizedOther);
+                if (!normalizedOther || isNoResponseOther) {
+                  emptySections.push("Other product name");
+                }
+              }
+            }
+
+            const problems = [];
+
+            if (missingHeadings.length) {
+              problems.push(`Missing required issue form sections: ${missingHeadings.join(", ")}`);
+            }
+
+            if (emptySections.length) {
+              problems.push(`The following sections must not be empty or "_No response_": ${emptySections.join(", ")}`);
+            }
+
+            if (problems.length) {
+              core.setFailed(problems.join(" | "));
+            }
